@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use cotton_ssdp::{AsyncService, Notification};
 use futures::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::{cell::RefCell, collections::HashMap, fmt::Debug, net::TcpStream, rc::Rc};
 use websocket::{sync::Client, ClientBuilder, Message, OwnedMessage};
 
@@ -28,6 +29,8 @@ enum Method {
     GetUpfInfos,
     GetStatus,
     GetOptions,
+    GetOptionList,
+    GetOption { name: String },
     Capture,
 }
 
@@ -40,10 +43,19 @@ struct Request {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Response<T> {
+struct IncomingRequest<'r> {
+    jsonrpc: String,
+    method: String,
+    #[serde(borrow)]
+    params: &'r RawValue,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Response<'r> {
     id: u32,
     jsonrpc: String,
-    result: T,
+    #[serde(borrow)]
+    result: &'r RawValue,
     warning: Option<ResponseWarning>,
 }
 
@@ -71,6 +83,54 @@ struct ResponseStatus {
 struct ResponseGetUpfInfos {
     is_full: bool,
     upf_infos: Vec<UpfInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResponseGetOptionList {
+    options: Vec<CameraOption>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum CameraOption {
+    Boolean {
+        name: String,
+        constraints: Vec<Constraint<bool>>,
+    },
+    Enumeration {
+        name: String,
+        constraints: Vec<Constraint<String>>,
+    },
+    Number {
+        name: String,
+        constraints: Vec<Constraint<String>>,
+    },
+    Integer {
+        name: String,
+        constraints: Vec<Constraint<u64>>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "constraint", rename_all = "snake_case")]
+enum Constraint<T> {
+    Values { value: Vec<T> },
+    Min { value: T },
+    Max { value: T },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResponseGetOption {
+    name: String,
+    value: StringOrNumber,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StringOrNumber {
+    String(String),
+    Number(f64),
+    Bool(bool),
 }
 
 // TODO error reponse {"error":{"code":309,"details":{"panorama":{"message":"no_panorama","sender":"delete_upf"},"preview":{"message":"no_preview","sender":"delete_upf"}},"request":{"id":3,"jsonrpc":"2.0","method":"delete_upf","params":{"image_id":"4fd70dfc074340296cc2ebb92158a18d"}}},"id":3,"jsonrpc":"2.0"}
@@ -115,28 +175,51 @@ struct Storage {
     usage: u64,
 }
 
-fn send(client: &mut Client<TcpStream>, req_id: &mut u32, method: Method) -> Result<()> {
+fn send<T: Debug + DeserializeOwned>(
+    client: &mut Client<TcpStream>,
+    req_id: &mut u32,
+    method: Method,
+) -> Result<T> {
     *req_id += 1;
+    let id = *req_id;
     let text = serde_json::to_string(&Request {
-        id: *req_id,
+        id,
         method,
         jsonrpc: "2.0",
     })?;
     client.send_message(&Message::text(text))?;
-    Ok(())
+
+    #[derive(Debug)]
+    enum PacketIncoming<'a> {
+        Response(Response<'a>),
+        IncomingRequest(IncomingRequest<'a>),
+    }
+
+    loop {
+        for text in recv(client)?.lines() {
+            let res = serde_json::from_str(text)
+                .map(PacketIncoming::Response)
+                .or_else(|_| serde_json::from_str(text).map(PacketIncoming::IncomingRequest))
+                .with_context(|| format!("Error parsing packet {}", &text))?;
+
+            match res {
+                PacketIncoming::Response(r) if r.id == id => {
+                    let text = r.result.get();
+                    return serde_json::from_str::<T>(text)
+                        .with_context(|| format!("Error parsing response {}", &text));
+                }
+                other => {
+                    println!("unexpected packet {:#?}", other);
+                }
+            }
+        }
+    }
 }
 
-fn recv<T: Debug + DeserializeOwned>(client: &mut Client<TcpStream>) -> Result<Response<T>> {
+fn recv(client: &mut Client<TcpStream>) -> Result<String> {
     match client.recv_message()? {
-        OwnedMessage::Text(text) => {
-            //println!("{}", text);
-            Ok(serde_json::from_str::<Response<T>>(&text)
-                .with_context(|| format!("Error parsing {}", &text))?)
-            //println!("{:#?}", res.result);
-        }
-        OwnedMessage::Close(_) => {
-            bail!("Websocket closed")
-        }
+        OwnedMessage::Text(text) => Ok(text),
+        OwnedMessage::Close(_) => bail!("Websocket closed"),
         OwnedMessage::Binary(_) => unimplemented!(),
         OwnedMessage::Ping(_) => unimplemented!(),
         OwnedMessage::Pong(_) => unimplemented!(),
@@ -144,7 +227,7 @@ fn recv<T: Debug + DeserializeOwned>(client: &mut Client<TcpStream>) -> Result<R
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+async fn find_camera() -> Result<String> {
     let mut netif = cotton_netif::get_interfaces_async()?;
     let mut ssdp = AsyncService::new()?;
 
@@ -165,6 +248,11 @@ async fn main() -> Result<()> {
         }
     };
     println!("Camera found at {location}");
+    Ok(location)
+}
+
+fn main() -> Result<()> {
+    let location = find_camera()?;
 
     let client = Rc::new(RefCell::new(
         ClientBuilder::new(&location)
@@ -175,7 +263,7 @@ async fn main() -> Result<()> {
 
     let mut req_id = 0;
 
-    send(
+    let auth: ResponseStatus = send(
         &mut client.borrow_mut(),
         &mut req_id,
         Method::Auth(MethodAuth {
@@ -183,10 +271,7 @@ async fn main() -> Result<()> {
             force: "test".to_string(),
         }),
     )?;
-    let auth: Response<ResponseStatus> = recv(&mut client.borrow_mut())?;
     println!("{:#?}", auth);
-
-    //return Ok(());
 
     use easy_repl::{command, CommandStatus, Repl};
 
@@ -199,8 +284,7 @@ async fn main() -> Result<()> {
         "List all UPFs",
         () =>
             || {
-            send(&mut c.borrow_mut(), &mut req_id, Method::GetUpfInfos)?;
-            let res: Response<ResponseGetUpfInfos> = recv(&mut c.borrow_mut())?;
+            let res: ResponseGetUpfInfos = send(&mut c.borrow_mut(), &mut req_id, Method::GetUpfInfos)?;
             println!("{:#?}", res);
             Ok(CommandStatus::Done)
             }},
@@ -213,8 +297,7 @@ async fn main() -> Result<()> {
             command! {
                 "Delete UPF by ID",
                 (id: String) => |image_id| {
-                    send(&mut c.borrow_mut(), &mut req_id, Method::DeleteUpf(MethodDeleteUpf { image_id }))?;
-                    let res: Response<ResponseDelete> = recv(&mut c.borrow_mut())?;
+                    let res: ResponseDelete = send(&mut c.borrow_mut(), &mut req_id, Method::DeleteUpf(MethodDeleteUpf { image_id }))?;
                     println!("{:#?}", res);
                     Ok(CommandStatus::Done)
                 }
@@ -227,8 +310,7 @@ async fn main() -> Result<()> {
         command! {
             "Get device status",
             () => || {
-                send(&mut c.borrow_mut(), &mut req_id, Method::GetStatus)?;
-                let res: Response<ResponseStatus> = recv(&mut c.borrow_mut())?;
+                let res: ResponseStatus = send(&mut c.borrow_mut(), &mut req_id, Method::GetStatus)?;
                 println!("{:#?}", res);
                 Ok(CommandStatus::Done)
             }
@@ -241,8 +323,33 @@ async fn main() -> Result<()> {
         command! {
             "Get options",
             () => || {
-                send(&mut c.borrow_mut(), &mut req_id, Method::GetOptions)?;
-                let res: Response<ResponseStatus> = recv(&mut c.borrow_mut())?;
+                let res: ResponseStatus = send(&mut c.borrow_mut(), &mut req_id, Method::GetOptions)?;
+                println!("{:#?}", res);
+                Ok(CommandStatus::Done)
+            }
+        },
+    );
+
+    let c = client.clone();
+    let repl = repl.add(
+        "get_option_list",
+        command! {
+            "Get option list",
+            () => || {
+                let res: ResponseGetOptionList = send(&mut c.borrow_mut(), &mut req_id, Method::GetOptionList)?;
+                println!("{:#?}", res);
+                Ok(CommandStatus::Done)
+            }
+        },
+    );
+
+    let c = client.clone();
+    let repl = repl.add(
+        "get_option_value",
+        command! {
+            "Get option value",
+            (name: String) => |name| {
+                let res: ResponseGetOption = send(&mut c.borrow_mut(), &mut req_id, Method::GetOption { name })?;
                 println!("{:#?}", res);
                 Ok(CommandStatus::Done)
             }
@@ -255,8 +362,7 @@ async fn main() -> Result<()> {
         command! {
             "Capture new panorama",
             () => || {
-                send(&mut c.borrow_mut(), &mut req_id, Method::Capture)?;
-                let res: Response<ResponseCapture> = recv(&mut c.borrow_mut())?;
+                let res: ResponseCapture = send(&mut c.borrow_mut(), &mut req_id, Method::Capture)?;
                 println!("{:#?}", res);
                 Ok(CommandStatus::Done)
             }
@@ -268,4 +374,84 @@ async fn main() -> Result<()> {
     repl.run().expect("Critical REPL error");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn options() {
+        serde_json::from_str::<ResponseGetOptionList>(
+            r#"{
+            "options": [{
+                    "constraints": [{
+                        "constraint": "values",
+                        "value": [true, false]
+                    }],
+                    "name": "AutoExposure",
+                    "type": "Boolean"
+                },
+                {
+                    "constraints": [{
+                        "constraint": "values",
+                        "value": ["0", "3000", "4500", "5500", "6500", "8000"]
+                    }],
+                    "name": "ColorTemperature",
+                    "type": "Enumeration"
+                },
+                {
+                    "constraints": [{
+                            "constraint": "min",
+                            "value": "0.25"
+                        },
+                        {
+                            "constraint": "max",
+                            "value": "2000"
+                        }
+                    ],
+                    "name": "ExposureTime",
+                    "type": "Number"
+                },
+                {
+                    "constraints": [{
+                        "constraint": "values",
+                        "value": ["50", "100", "200", "400", "800"]
+                    }],
+                    "name": "ISO",
+                    "type": "Enumeration"
+                },
+                {
+                    "constraints": [{
+                            "constraint": "min",
+                            "value": 0
+                        },
+                        {
+                            "constraint": "max",
+                            "value": 10000
+                        }
+                    ],
+                    "name": "TriggerDelay",
+                    "type": "Integer"
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn constraint() {
+        serde_json::from_str::<CameraOption>(
+            r#"{
+            "constraints": [{
+                "constraint": "values",
+                "value": [true, false]
+            }],
+            "name": "AutoExposure",
+            "type": "Boolean"
+        }"#,
+        )
+        .unwrap();
+    }
 }
