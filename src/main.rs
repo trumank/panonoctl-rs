@@ -285,7 +285,11 @@ fn main() -> Result<()> {
         () =>
             || {
             let res: ResponseGetUpfInfos = send(&mut c.borrow_mut(), &mut req_id, Method::GetUpfInfos)?;
-            println!("{:#?}", res);
+            let mut upfs = res.upf_infos.iter().collect::<Vec<_>>();
+            upfs.sort_by_key(|u| &u.capture_date);
+            for upf in upfs {
+                println!("{}  {}  {:>7}  {}", upf.capture_date, upf.image_id, upf.size, upf.upf_url);
+            }
             Ok(CommandStatus::Done)
             }},
     );
