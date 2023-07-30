@@ -21,21 +21,10 @@ use websocket::{sync::Client, ClientBuilder, Message, OwnedMessage};
 //
 
 #[derive(Debug, Serialize, Deserialize)]
-struct MethodAuth {
-    device: String,
-    force: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct MethodDeleteUpf {
-    image_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "method", content = "params")]
 enum Method {
-    Auth(MethodAuth),
-    DeleteUpf(MethodDeleteUpf),
+    Auth { device: String, force: String },
+    DeleteUpf { image_id: String },
     GetUpfInfos,
     GetStatus,
     GetOptions,
@@ -278,10 +267,10 @@ fn main() -> Result<()> {
     let auth: ResponseStatus = send(
         &mut client.borrow_mut(),
         &mut req_id,
-        Method::Auth(MethodAuth {
+        Method::Auth {
             device: "test".to_string(),
             force: "test".to_string(),
-        }),
+        },
     )?;
     println!("{:#?}", auth);
 
@@ -295,7 +284,7 @@ fn main() -> Result<()> {
         command! {
             "Delete UPF by ID",
             (id: String) => |image_id| {
-                let res: ResponseDelete = send(&mut c.borrow_mut(), &mut req_id, Method::DeleteUpf(MethodDeleteUpf { image_id }))?;
+                let res: ResponseDelete = send(&mut c.borrow_mut(), &mut req_id, Method::DeleteUpf{ image_id })?;
                 println!("{:#?}", res);
                 Ok(CommandStatus::Done)
             }
