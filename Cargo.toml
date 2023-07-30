@@ -1,0 +1,15 @@
+[package]
+name = "panonoctl-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.72"
+cotton-netif = { version = "0.0.4", git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
+cotton-ssdp = { version = "0.0.2", git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
+easy-repl = "0.2.1"
+futures = "0.3.28"
+serde = { version = "1.0.178", features = ["derive"] }
+serde_json = { version = "1.0.104", features = ["raw_value"] }
+tokio = { version = "1.29.1", features = ["full"] }
+websocket = "0.26.5"
