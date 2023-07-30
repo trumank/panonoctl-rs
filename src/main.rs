@@ -1,7 +1,5 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use cotton_ssdp::{AsyncService, Notification};
-use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressIterator, ProgressState, ProgressStyle};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -226,8 +224,11 @@ fn recv(client: &mut Client<TcpStream>) -> Result<String> {
     }
 }
 
+#[cfg(feature = "ssdp")]
 #[tokio::main(flavor = "current_thread")]
 async fn find_camera() -> Result<String> {
+    use cotton_ssdp::{AsyncService, Notification};
+    use futures::StreamExt;
     let mut netif = cotton_netif::get_interfaces_async()?;
     let mut ssdp = AsyncService::new()?;
 
@@ -268,7 +269,16 @@ fn main() -> Result<()> {
             println!("Connecting to {}", address);
             address
         }
-        None => find_camera()?,
+        None => {
+            #[cfg(feature = "ssdp")]
+            {
+                find_camera()?
+            }
+            #[cfg(not(feature = "ssdp"))]
+            {
+                bail!("Automatic discovery (\"ssdp\" feature, Linux only) is disabled. See --help to specify manually")
+            }
+        }
     };
 
     let output_dir = Path::new("upfs");

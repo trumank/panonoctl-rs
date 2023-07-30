@@ -3,11 +3,14 @@ name = "panonoctl-rs"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+ssdp = ["dep:cotton-netif", "dep:cotton-ssdp"]
+
 [dependencies]
+cotton-netif = { version = "0.0.4", optional = true, git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
+cotton-ssdp = { version = "0.0.2", optional = true, git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
 anyhow = "1.0.72"
 clap = { version = "4.3.19", features = ["derive"] }
-cotton-netif = { version = "0.0.4", git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
-cotton-ssdp = { version = "0.0.2", git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
 easy-repl = "0.2.1"
 futures = "0.3.28"
 indicatif = "0.17.5"
