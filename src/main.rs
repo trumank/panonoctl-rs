@@ -1,9 +1,19 @@
 use anyhow::{bail, Context, Result};
 use cotton_ssdp::{AsyncService, Notification};
 use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressIterator, ProgressState, ProgressStyle};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::value::RawValue;
-use std::{cell::RefCell, collections::HashMap, fmt::Debug, net::TcpStream, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fmt::{Debug, Write},
+    fs,
+    io::Read,
+    net::TcpStream,
+    path::Path,
+    rc::Rc,
+};
 use websocket::{sync::Client, ClientBuilder, Message, OwnedMessage};
 
 // TODO
@@ -254,6 +264,8 @@ async fn find_camera() -> Result<String> {
 fn main() -> Result<()> {
     let location = find_camera()?;
 
+    let output_dir = Path::new("upfs");
+
     let client = Rc::new(RefCell::new(
         ClientBuilder::new(&location)
             .unwrap()
@@ -279,34 +291,72 @@ fn main() -> Result<()> {
 
     let c = client.clone();
     let repl = repl.add(
-        "get_upf_infos",
+        "delete",
         command! {
-        "List all UPFs",
-        () =>
-            || {
-            let res: ResponseGetUpfInfos = send(&mut c.borrow_mut(), &mut req_id, Method::GetUpfInfos)?;
-            let mut upfs = res.upf_infos.iter().collect::<Vec<_>>();
-            upfs.sort_by_key(|u| &u.capture_date);
-            for upf in upfs {
-                println!("{}  {}  {:>7}  {}", upf.capture_date, upf.image_id, upf.size, upf.upf_url);
+            "Delete UPF by ID",
+            (id: String) => |image_id| {
+                let res: ResponseDelete = send(&mut c.borrow_mut(), &mut req_id, Method::DeleteUpf(MethodDeleteUpf { image_id }))?;
+                println!("{:#?}", res);
+                Ok(CommandStatus::Done)
             }
-            Ok(CommandStatus::Done)
-            }},
+        },
     );
 
     let c = client.clone();
-    let repl = repl
-        .add(
-            "delete",
-            command! {
-                "Delete UPF by ID",
-                (id: String) => |image_id| {
-                    let res: ResponseDelete = send(&mut c.borrow_mut(), &mut req_id, Method::DeleteUpf(MethodDeleteUpf { image_id }))?;
-                    println!("{:#?}", res);
-                    Ok(CommandStatus::Done)
+    let repl = repl.add(
+        "download",
+        command! {
+            "Download any new UPFs",
+            () => || {
+                let res: ResponseGetUpfInfos = send(&mut c.borrow_mut(), &mut req_id, Method::GetUpfInfos)?;
+                let mut to_download = vec![];
+                for upf in &res.upf_infos {
+                    let path = output_dir.join(&format!("{}.upf", upf.image_id));
+                    if path.exists() {
+                        println!("{} already exists, skipping...", path.display());
+                    } else {
+                        to_download.push((upf, path));
+                    }
                 }
-            },
-        );
+                fs::create_dir(output_dir).ok();
+                for (i, (upf, path)) in to_download.iter().enumerate() {
+                    println!("[{}/{}] downloading {} to {}", i + 1, to_download.len(), upf.image_id, path.display());
+                    let res = ureq::get(&upf.upf_url)
+                        .call()?;
+                    let size = res.header("Content-Length").and_then(|l| l.parse::<usize>().ok()).unwrap_or(upf.size as usize);
+                    let pb = ProgressBar::new(size as u64).with_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                        .unwrap()
+                        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+                        .progress_chars("#>-"));
+                    let mut data = Vec::with_capacity(size);
+                    for b in res.into_reader().bytes().progress_with(pb) {
+                        data.push(b?);
+                    }
+                    fs::write(path, data)?;
+                }
+                println!("complete");
+                Ok(CommandStatus::Done)
+            }
+        },
+    );
+
+    let c = client.clone();
+    let repl = repl.add(
+        "get_upf_infos",
+        command! {
+            "List all UPFs",
+            () =>
+            || {
+                let res: ResponseGetUpfInfos = send(&mut c.borrow_mut(), &mut req_id, Method::GetUpfInfos)?;
+                let mut upfs = res.upf_infos.iter().collect::<Vec<_>>();
+                upfs.sort_by_key(|u| &u.capture_date);
+                for upf in upfs {
+                    println!("{}  {}  {:>7}  {}", upf.capture_date, upf.image_id, upf.size, upf.upf_url);
+                }
+                Ok(CommandStatus::Done)
+            }
+        },
+    );
 
     let c = client.clone();
     let repl = repl.add(
