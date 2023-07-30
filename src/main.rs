@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use clap::Parser;
 use cotton_ssdp::{AsyncService, Notification};
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressIterator, ProgressState, ProgressStyle};
@@ -250,13 +251,30 @@ async fn find_camera() -> Result<String> {
     Ok(location)
 }
 
+/// 3rd party REPL for Panono 360 Camera
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Websocket address for the camera. If ommitted, it attempt to locate it with SSDP
+    /// Example on WiFi: ws://192.168.80.80:12345/8086
+    address: Option<String>,
+}
+
 fn main() -> Result<()> {
-    let location = find_camera()?;
+    let args = Args::parse();
+
+    let address = match args.address {
+        Some(address) => {
+            println!("Connecting to {}", address);
+            address
+        }
+        None => find_camera()?,
+    };
 
     let output_dir = Path::new("upfs");
 
     let client = Rc::new(RefCell::new(
-        ClientBuilder::new(&location)
+        ClientBuilder::new(&address)
             .unwrap()
             .add_protocol("rust-websocket")
             .connect_insecure()?,

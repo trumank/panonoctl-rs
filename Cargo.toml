@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.72"
+clap = { version = "4.3.19", features = ["derive"] }
 cotton-netif = { version = "0.0.4", git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
 cotton-ssdp = { version = "0.0.2", git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
 easy-repl = "0.2.1"
