@@ -7,8 +7,8 @@ edition = "2021"
 ssdp = ["dep:cotton-netif", "dep:cotton-ssdp"]
 
 [dependencies]
-cotton-netif = { version = "0.0.4", optional = true, git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
-cotton-ssdp = { version = "0.0.2", optional = true, git = "https://github.com/trumank/cotton", branch = "remove-select-println" }
+cotton-netif = { version = "0.0.4", optional = true }
+cotton-ssdp = { version = "0.0.3", optional = true }
 anyhow = "1.0.72"
 clap = { version = "4.3.19", features = ["derive"] }
 easy-repl = "0.2.1"
